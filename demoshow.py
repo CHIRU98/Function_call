@@ -4,31 +4,21 @@ from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
 import json
 from flask import Flask, request, jsonify
 
-
-torch.cuda.empty_cache()
-
 app = Flask(__name__)
 
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-#torch.cuda.reset_device(device)
-
 print("device:",device)
 
 #Model Name
 model_id = "gorilla-llm/gorilla-openfunctions-v1"
 
 
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch_dtype)
+tokenizer = AutoTokenizer.from_pretrained(model_id, truncation=True)
+model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16)
 pipe = pipeline("text-generation", 
                 model=model, 
                 tokenizer=tokenizer,
-                max_new_tokens=128,
-                batch_size=16,
-                torch_dtype=torch_dtype,
                 device=device)
 
 ##Import the vec nece
@@ -69,40 +59,13 @@ def generate_functions_prompt(query,functions=None):
 
 def generate(prompt):
     return pipe(generate_functions_prompt(prompt),max_new_tokens=512,do_sample=False,return_full_text=False)[0]['generated_text']
-   # return pipe(generate_functions_prompt(prompt),max_new_tokens=512,do_sample=False,return_full_text=False)[0]['generated_text']
 
 #@app.route('/generate_prompt',methods=['GET','POST'])
-@app.route('/generate_multifunc',methods=['POST'])
+@app.route('/generate_prompt',methods=['POST'])
 def generate_prompt():
     data = request.get_json()
     query = data.get('query')
-   
-   ###Sentence Spilit Logic
-    import spacy
-    def extract_multiple_queries(sentence):
 
-        nlp = spacy.load("en_core_web_sm")
-        doc = nlp(sentence)
-
-        # Find the indices of conjunctions
-        conj_indices = [i for i, token in enumerate(doc) if token.dep_ == 'cc']
-
-        if conj_indices and 0 < conj_indices[0] < len(doc) - 1:
-            # Form multiple queries by splitting at conjunctions
-            queries = []
-            start_index = 0
-
-            for conj_index in conj_indices:
-                queries.append(' '.join([token.text_with_ws for token in doc[start_index:conj_index]]).strip())
-                start_index = conj_index + 1
-
-            # Add the last segment of the sentence as a query
-            queries.append(' '.join([token.text_with_ws for token in doc[start_index:]]).strip())
-
-            return queries
-        else:
-            return None
-        
     ###
     hits = qdrant.search(
     collection_name="functioncall1",
@@ -116,34 +79,28 @@ def generate_prompt():
         data.append(hit.payload["api_name"])
 
     ##Find the Func doc by using the RAG Func Schemas
-    gen_functions = []
+    functions = []
     for item in data:
         for json_item in documents:
             if item == json_item.get("name") or item == json_item.get("api_name"):
-                 gen_functions.append(json_item)
-    ####
-   # print("functions:",functions)
-    queries = extract_multiple_queries(query)
-    
+                 functions.append(json_item)
+    ###
+    print("functions:",functions)
+
     ##
-    if queries==None:
-       prompt=generate_functions_prompt(query,functions=gen_functions)
-       result = generate(prompt)
-       print("result",result)
-       return jsonify({"output": result})
-    else:
-        result = []
-        for i in range(len(queries)):
-            prompt=generate_functions_prompt(queries[i],functions=gen_functions)
-            result.append(generate(prompt))
-        return jsonify({"output": result})
-    
     #prompt = generate_functions_prompt(query,functions=functions)
     #result = generate(prompt)
-    #print("result",result)
-    #return jsonify({"output": result})
+    
+    ###
+    prompt = []
+    prompt.append(generate_functions_prompt(query,functions=functions))
+    print("Prompt",prompt)
 
+    result = []
+    result.append(generate(prompt))
+    print("result",result)
 
+    return jsonify({"output": result})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0',port=5001)
